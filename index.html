@@ -1,1 +1,761 @@
-empty
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GARGANTUA — Black Hole</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400&display=swap');
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+        background: #000; 
+        overflow: hidden; 
+        width: 100vw;
+        height: 100vh;
+        cursor: grab;
+        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+    }
+    body:active { cursor: grabbing; }
+    #scene-container {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        z-index: 1;
+    }
+
+    /* ── Liquid Glass UI ── */
+    #ui-layer {
+        position: absolute;
+        top: 16px; left: 16px;
+        z-index: 10;
+        pointer-events: none;
+        padding: 10px 14px;
+        border-radius: 16px;
+        min-width: 150px;
+
+        /* Liquid Glass: layered translucency */
+        background: linear-gradient(
+            135deg,
+            rgba(255, 255, 255, 0.08) 0%,
+            rgba(255, 255, 255, 0.03) 50%,
+            rgba(255, 255, 255, 0.06) 100%
+        );
+        backdrop-filter: blur(40px) saturate(1.8) brightness(1.1);
+        -webkit-backdrop-filter: blur(40px) saturate(1.8) brightness(1.1);
+        border: 0.5px solid rgba(255, 255, 255, 0.15);
+        box-shadow:
+            0 0.5px 0 0 rgba(255,255,255,0.12) inset,
+            0 -0.5px 0 0 rgba(255,255,255,0.04) inset,
+            0 4px 16px rgba(0,0,0,0.3),
+            0 1px 3px rgba(0,0,0,0.2);
+    }
+    #ui-layer h1 {
+        font-size: 10px;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.55);
+        font-weight: 400;
+        margin-bottom: 6px;
+    }
+    .ui-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2px;
+        gap: 12px;
+    }
+    .ui-label {
+        font-size: 8px;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.3);
+        font-weight: 300;
+    }
+    .ui-value {
+        font-size: 9px;
+        color: rgba(255, 200, 140, 0.8);
+        font-weight: 400;
+        font-variant-numeric: tabular-nums;
+    }
+    .ui-divider {
+        width: 100%; height: 0.5px;
+        background: rgba(255,255,255,0.08);
+        margin: 5px 0;
+    }
+    .ui-hint {
+        font-size: 7.5px;
+        color: rgba(255,255,255,0.18);
+        margin-top: 6px;
+        line-height: 1.5;
+        letter-spacing: 0.3px;
+    }
+
+    #vignette {
+        position: fixed;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        pointer-events: none;
+        z-index: 5;
+        background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.6) 100%);
+    }
+</style>
+</head>
+<body>
+
+<div id="vignette"></div>
+
+<div id="ui-layer">
+    <h1>Gargantua</h1>
+    <div class="ui-divider"></div>
+    <div class="ui-row">
+        <span class="ui-label">Render</span>
+        <span class="ui-value">Geodesic Raymarching</span>
+    </div>
+    <div class="ui-row">
+        <span class="ui-label">Observer</span>
+        <span class="ui-value" id="ui-dist">—</span>
+    </div>
+    <div class="ui-divider"></div>
+    <div class="ui-hint">G grid · scroll zoom · drag orbit · shift+drag pan</div>
+</div>
+
+<div id="scene-container"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+(function(){
+'use strict';
+
+const RS = 2.0;
+let showGrid = false;
+
+/* ═══════════════════════════════════════════
+   THREE.JS CORE
+   ═══════════════════════════════════════════ */
+const container = document.getElementById('scene-container');
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.01, 5000);
+camera.position.set(0, 5.0, 16.0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+container.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 3.0;
+controls.maxDistance = 2000;
+controls.enablePan = true;
+controls.panSpeed = 1.5;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.25;
+controls.screenSpacePanning = true;
+
+/* ═══════════════════════════════════════════
+   FLAMM'S PARABOLOID GRID
+   ═══════════════════════════════════════════ */
+const gridGeo = new THREE.PlaneGeometry(40, 40, 90, 90);
+const gp = gridGeo.attributes.position;
+for (let i = 0; i < gp.count; i++) {
+    const x = gp.getX(i), y = gp.getY(i);
+    const r = Math.sqrt(x*x + y*y);
+    let d = r > RS*1.1 ? -2.0*Math.sqrt(RS*(r - RS)) : -10.0;
+    gp.setZ(i, Math.max(d, -9));
+}
+gridGeo.computeVertexNormals();
+gridGeo.rotateX(-Math.PI / 2);
+const gridMesh = new THREE.Mesh(gridGeo, new THREE.MeshBasicMaterial({
+    color: 0x00ff88, wireframe: true, transparent: true, opacity: 0.1
+}));
+gridMesh.visible = showGrid;
+scene.add(gridMesh);
+
+/* ═══════════════════════════════════════════
+   DISTANT SOLAR SYSTEM
+   ═══════════════════════════════════════════ */
+const SOLAR_CENTER = new THREE.Vector3(400, 30, -350);
+const EARTH_ORBIT_R = 28;
+const MOON_ORBIT_R = 3.5;
+
+// ── Sun ──
+function makeSunTexture() {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(128,128,0, 128,128,128);
+    g.addColorStop(0, '#fffbe6');
+    g.addColorStop(0.15, '#fff4b0');
+    g.addColorStop(0.4, '#ffcc33');
+    g.addColorStop(0.7, '#ff8800');
+    g.addColorStop(1, '#331100');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,256,256);
+    // Surface granulation
+    for (let i = 0; i < 600; i++) {
+        const x = Math.random()*256, y = Math.random()*256;
+        const dx = x-128, dy = y-128;
+        if (dx*dx+dy*dy > 110*110) continue;
+        ctx.fillStyle = `rgba(255,${180+Math.random()*75},${Math.random()*80},${0.1+Math.random()*0.15})`;
+        ctx.beginPath();
+        ctx.arc(x, y, 1+Math.random()*3, 0, Math.PI*2);
+        ctx.fill();
+    }
+    return new THREE.CanvasTexture(c);
+}
+
+const sunGeo = new THREE.SphereGeometry(6, 48, 48);
+const sunMat = new THREE.MeshBasicMaterial({ map: makeSunTexture() });
+const sunMesh = new THREE.Mesh(sunGeo, sunMat);
+sunMesh.position.copy(SOLAR_CENTER);
+scene.add(sunMesh);
+
+// Sun glow sprite
+const glowCanvas = document.createElement('canvas');
+glowCanvas.width = 256; glowCanvas.height = 256;
+const gc = glowCanvas.getContext('2d');
+const gg = gc.createRadialGradient(128,128,0, 128,128,128);
+gg.addColorStop(0, 'rgba(255,240,200,0.6)');
+gg.addColorStop(0.3, 'rgba(255,180,60,0.2)');
+gg.addColorStop(0.6, 'rgba(255,120,20,0.05)');
+gg.addColorStop(1, 'rgba(0,0,0,0)');
+gc.fillStyle = gg;
+gc.fillRect(0,0,256,256);
+const glowTex = new THREE.CanvasTexture(glowCanvas);
+const sunGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0xffcc66,
+    blending: THREE.AdditiveBlending, depthWrite: false, transparent: true
+}));
+sunGlow.scale.set(40, 40, 1);
+sunGlow.position.copy(SOLAR_CENTER);
+scene.add(sunGlow);
+
+// Sun point light
+const sunLight = new THREE.PointLight(0xfff4e0, 2.0, 200);
+sunLight.position.copy(SOLAR_CENTER);
+scene.add(sunLight);
+
+// ── Earth ──
+function makeEarthTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 256;
+    const ctx = c.getContext('2d');
+    
+    // Ocean base
+    ctx.fillStyle = '#1a3a5c';
+    ctx.fillRect(0,0,512,256);
+    
+    // Deep ocean variation
+    for (let i = 0; i < 2000; i++) {
+        const x = Math.random()*512, y = Math.random()*256;
+        ctx.fillStyle = `rgba(${15+Math.random()*30},${40+Math.random()*40},${70+Math.random()*50},0.3)`;
+        ctx.beginPath();
+        ctx.arc(x, y, 1+Math.random()*4, 0, Math.PI*2);
+        ctx.fill();
+    }
+    
+    // Continents (simplified organic shapes)
+    const continents = [
+        // North America
+        {cx: 110, cy: 80, rx: 40, ry: 35, color: '#2d6b3a'},
+        {cx: 100, cy: 105, rx: 20, ry: 12, color: '#3a7d4a'},
+        // South America
+        {cx: 140, cy: 155, rx: 18, ry: 40, color: '#267535'},
+        // Europe
+        {cx: 260, cy: 75, rx: 22, ry: 18, color: '#3d7843'},
+        // Africa
+        {cx: 265, cy: 135, rx: 25, ry: 38, color: '#5a8a40'},
+        // Asia
+        {cx: 330, cy: 75, rx: 55, ry: 30, color: '#3a7040'},
+        {cx: 360, cy: 100, rx: 25, ry: 20, color: '#448045'},
+        // Australia
+        {cx: 410, cy: 165, rx: 22, ry: 15, color: '#7a6530'},
+        // Antarctica
+        {cx: 256, cy: 240, rx: 90, ry: 14, color: '#d8dce8'},
+        // Greenland
+        {cx: 170, cy: 45, rx: 15, ry: 12, color: '#c8d4dd'},
+    ];
+    
+    for (const cont of continents) {
+        ctx.fillStyle = cont.color;
+        ctx.beginPath();
+        ctx.ellipse(cont.cx, cont.cy, cont.rx, cont.ry, (Math.random()-0.5)*0.3, 0, Math.PI*2);
+        ctx.fill();
+        // Terrain noise on continents
+        for (let j = 0; j < 80; j++) {
+            const a = Math.random()*Math.PI*2;
+            const dr = Math.random();
+            const px = cont.cx + Math.cos(a)*cont.rx*dr;
+            const py = cont.cy + Math.sin(a)*cont.ry*dr;
+            const shade = Math.random();
+            ctx.fillStyle = shade > 0.5 
+                ? `rgba(60,${100+shade*80},50,0.4)` 
+                : `rgba(${80+shade*60},${90+shade*40},30,0.3)`;
+            ctx.beginPath();
+            ctx.arc(px, py, 1+Math.random()*3, 0, Math.PI*2);
+            ctx.fill();
+        }
+    }
+    
+    // Cloud wisps
+    ctx.globalAlpha = 0.25;
+    for (let i = 0; i < 120; i++) {
+        const x = Math.random()*512, y = Math.random()*256;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.ellipse(x, y, 3+Math.random()*15, 1+Math.random()*4, Math.random()*Math.PI, 0, Math.PI*2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1.0;
+    
+    // Polar ice caps
+    const polar = ctx.createLinearGradient(0,0,0,20);
+    polar.addColorStop(0, 'rgba(220,230,245,0.7)');
+    polar.addColorStop(1, 'rgba(220,230,245,0)');
+    ctx.fillStyle = polar;
+    ctx.fillRect(0,0,512,20);
+    
+    const polarS = ctx.createLinearGradient(0,236,0,256);
+    polarS.addColorStop(0, 'rgba(220,230,245,0)');
+    polarS.addColorStop(1, 'rgba(220,230,245,0.7)');
+    ctx.fillStyle = polarS;
+    ctx.fillRect(0,236,512,20);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    return tex;
+}
+
+const earthGeo = new THREE.SphereGeometry(2.5, 48, 48);
+const earthMat = new THREE.MeshPhongMaterial({
+    map: makeEarthTexture(),
+    specular: 0x333344,
+    shininess: 15
+});
+const earthMesh = new THREE.Mesh(earthGeo, earthMat);
+scene.add(earthMesh);
+
+// Atmosphere glow
+const atmosGeo = new THREE.SphereGeometry(2.7, 48, 48);
+const atmosMat = new THREE.MeshBasicMaterial({
+    color: 0x4488ff, transparent: true, opacity: 0.08,
+    side: THREE.BackSide
+});
+const atmosMesh = new THREE.Mesh(atmosGeo, atmosMat);
+scene.add(atmosMesh);
+
+// ── Moon ──
+function makeMoonTexture() {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 64;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#aaa8a0';
+    ctx.fillRect(0,0,128,64);
+    for (let i = 0; i < 200; i++) {
+        const x = Math.random()*128, y = Math.random()*64;
+        const r = 0.5+Math.random()*3;
+        const shade = 120+Math.random()*60;
+        ctx.fillStyle = `rgba(${shade},${shade-5},${shade-10},0.5)`;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI*2);
+        ctx.fill();
+    }
+    // Dark maria
+    const maria = [{x:40,y:25,r:12},{x:75,y:30,r:10},{x:55,y:40,r:8}];
+    for (const m of maria) {
+        ctx.fillStyle = 'rgba(80,78,75,0.3)';
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, m.r, 0, Math.PI*2);
+        ctx.fill();
+    }
+    return new THREE.CanvasTexture(c);
+}
+
+const moonGeo = new THREE.SphereGeometry(0.7, 32, 32);
+const moonMat = new THREE.MeshPhongMaterial({ map: makeMoonTexture(), shininess: 5 });
+const moonMesh = new THREE.Mesh(moonGeo, moonMat);
+scene.add(moonMesh);
+
+// Ambient for planet visibility
+scene.add(new THREE.AmbientLight(0x222233, 0.3));
+
+/* ═══════════════════════════════════════════
+   FULLSCREEN RAYMARCHER SHADER
+   ═══════════════════════════════════════════ */
+const mainShaderMat = new THREE.ShaderMaterial({
+    uniforms: {
+        uTime:       { value: 0 },
+        uCamPos:     { value: camera.position },
+        uRs:         { value: RS },
+        uResolution: { value: new THREE.Vector2(innerWidth, innerHeight) },
+        uShowGrid:   { value: 0.0 }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv * 2.0 - 1.0;
+            gl_Position = vec4(vUv, 1.0, 1.0);
+        }
+    `,
+    fragmentShader: `
+        precision highp float;
+        uniform vec2 uResolution;
+        uniform vec3 uCamPos;
+        uniform float uRs;
+        uniform float uTime;
+        uniform float uShowGrid;
+        varying vec2 vUv;
+
+        // ──── NOISE ────
+        float hash(float n) { return fract(sin(n)*43758.5453123); }
+        float hash2(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+        float hash3(vec3 p) { return fract(sin(dot(p,vec3(12.9898,78.233,45.164)))*43758.5453); }
+
+        float noise3(vec3 x) {
+            vec3 p = floor(x), f = fract(x);
+            f = f*f*(3.0-2.0*f);
+            float n = p.x + p.y*57.0 + 113.0*p.z;
+            return mix(mix(mix(hash(n),hash(n+1.0),f.x),
+                           mix(hash(n+57.0),hash(n+58.0),f.x),f.y),
+                       mix(mix(hash(n+113.0),hash(n+114.0),f.x),
+                           mix(hash(n+170.0),hash(n+171.0),f.x),f.y),f.z);
+        }
+
+        float fbm(vec3 p) {
+            float v = 0.0, a = 0.5;
+            for (int i = 0; i < 5; i++) { v += a*noise3(p); p *= 2.03; a *= 0.5; }
+            return v;
+        }
+
+        float fbm7(vec3 p) {
+            float v = 0.0, a = 0.5;
+            for (int i = 0; i < 7; i++) { v += a*noise3(p); p *= 1.97; a *= 0.48; }
+            return v;
+        }
+
+        // ──── STARS ────
+        float starField(vec3 dir) {
+            float s = 0.0;
+            vec2 u1 = vec2(atan(dir.z,dir.x)*50.0, dir.y*80.0);
+            s += step(0.997, hash2(floor(u1)));
+            vec2 u2 = vec2(atan(dir.z,dir.x)*120.0, dir.y*200.0);
+            s += step(0.999, hash2(floor(u2))) * 2.0;
+            vec2 u3 = vec2(atan(dir.z,dir.x)*200.0, dir.y*300.0);
+            float tw = hash2(floor(u3));
+            s += step(0.9995, tw) * (1.0 + sin(uTime*3.0 + tw*100.0)) * 1.5;
+            // Extra faint star layer
+            vec2 u4 = vec2(atan(dir.z,dir.x)*300.0, dir.y*500.0);
+            s += step(0.996, hash2(floor(u4))) * 0.2;
+            return s;
+        }
+
+        // ──── NEBULAE ────
+        // Multiple scattered nebula patches across the sky
+        vec3 nebula(vec3 dir) {
+            vec3 col = vec3(0.0);
+
+            // Each nebula: center direction, color, size, intensity
+            // Nebula 1: Warm emission (like Orion)
+            {
+                vec3 center = normalize(vec3(0.8, 0.3, -0.5));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 4.0);
+                float n = fbm7(dir * 6.0 + vec3(1.0, 0.0, 2.0));
+                float n2 = fbm(dir * 12.0 + vec3(3.0));
+                col += vec3(0.7, 0.2, 0.3) * n * mask * 0.5;
+                col += vec3(0.9, 0.5, 0.2) * n2 * mask * 0.3;
+            }
+            // Nebula 2: Blue reflection
+            {
+                vec3 center = normalize(vec3(-0.6, 0.5, 0.6));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 5.0);
+                float n = fbm7(dir * 5.0 + vec3(7.0, 3.0, 1.0));
+                col += vec3(0.15, 0.25, 0.6) * n * mask * 0.6;
+                col += vec3(0.3, 0.4, 0.8) * pow(n, 2.0) * mask * 0.3;
+            }
+            // Nebula 3: Green/teal planetary
+            {
+                vec3 center = normalize(vec3(0.3, -0.7, 0.6));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 6.0);
+                float n = fbm(dir * 8.0 + vec3(5.0, 8.0, 2.0));
+                col += vec3(0.1, 0.5, 0.4) * n * mask * 0.4;
+            }
+            // Nebula 4: Large faint purple cloud
+            {
+                vec3 center = normalize(vec3(-0.4, -0.2, -0.8));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 2.5);
+                float n = fbm7(dir * 3.5 + vec3(2.0, 6.0, 4.0));
+                col += vec3(0.3, 0.1, 0.4) * n * mask * 0.35;
+            }
+            // Nebula 5: Bright emission near galactic plane
+            {
+                vec3 center = normalize(vec3(0.9, 0.05, 0.3));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 5.5);
+                float n = fbm(dir * 7.0 + vec3(9.0, 1.0, 3.0));
+                float n2 = noise3(dir * 15.0 + uTime * 0.02);
+                col += vec3(0.8, 0.3, 0.15) * n * mask * 0.5;
+                col += vec3(1.0, 0.7, 0.3) * n2 * mask * 0.15;
+            }
+            // Nebula 6: Dark molecular cloud (subtractive)
+            {
+                vec3 center = normalize(vec3(-0.2, 0.1, 0.9));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 4.0);
+                float n = fbm(dir * 4.0 + vec3(0.0, 4.0, 7.0));
+                col -= vec3(0.03) * n * mask; // Darkens area
+            }
+            // Nebula 7: Distant faint red
+            {
+                vec3 center = normalize(vec3(0.0, 0.8, -0.4));
+                float d = 1.0 - dot(dir, center);
+                float mask = exp(-d * 3.5);
+                float n = fbm7(dir * 4.0 + vec3(11.0, 2.0, 5.0));
+                col += vec3(0.5, 0.08, 0.12) * n * mask * 0.4;
+            }
+
+            return max(col, vec3(0.0));
+        }
+
+        // ──── GALAXY BACKGROUND ────
+        vec3 galaxy(vec3 dir) {
+            float lat = asin(dir.y);
+            float band = 1.0 - smoothstep(0.0, 0.5, abs(lat));
+            float band2 = 1.0 - smoothstep(0.0, 0.15, abs(lat - 0.05));
+
+            vec3 np = dir * 5.0 + vec3(0.0, 0.0, 1.0);
+            float n = fbm(np);
+            float n2 = fbm(np * 2.0 + 3.0);
+            float dust = smoothstep(0.4, 0.6, fbm(dir * 8.0));
+
+            vec3 warmGas  = vec3(0.8, 0.5, 0.3) * n * band;
+            vec3 blueGas  = vec3(0.2, 0.3, 0.6) * n2 * band2;
+            vec3 darkDust = vec3(0.02, 0.01, 0.03);
+            vec3 galaxyCol = mix(warmGas + blueGas, darkDust, dust * band * 0.6) * 0.6;
+
+            float stars = starField(dir);
+            vec3 starCol = vec3(1.0, 0.95, 0.9) * stars * 0.5;
+            starCol *= (1.0 - band * 0.3);
+
+            // Add nebulae
+            vec3 neb = nebula(dir);
+
+            return galaxyCol + starCol + neb + vec3(0.004, 0.003, 0.007);
+        }
+
+        #define PHYS_GM 100.0
+
+        // ──── ACCRETION DISK ────
+        vec4 sampleDisk(vec3 pos) {
+            float r = length(pos.xz);
+            float y = pos.y;
+            float inner = 3.0 * uRs;
+            float outer = 16.0 * uRs;
+            if (r < inner*0.8 || r > outer) return vec4(0.0);
+
+            float thickness = 0.1 + r*0.045;
+            float yFade = exp(-y*y / (thickness*thickness));
+            if (yFade < 0.01) return vec4(0.0);
+
+            float angle = atan(pos.z, pos.x);
+            float omega = sqrt(1.5 * uRs / (r*r*r));
+            float phase = angle + uTime * omega * 8.0;
+
+            float turb1 = fbm(vec3(r*1.5, phase*2.0, y*5.0 + uTime*0.3));
+            float turb2 = noise3(vec3(r*4.0, phase*6.0, uTime*0.5));
+            float spiral = sin(phase*3.0 - r*1.2)*0.5+0.5;
+            float rings = (sin(r*5.0)*0.5+0.5) * (sin(r*12.0)*0.3+0.7);
+
+            float density = (turb1*0.6 + spiral*0.3 + rings*0.1) * turb2;
+            density *= yFade;
+            density *= smoothstep(inner*0.8, inner+0.5, r);
+            density *= smoothstep(outer, outer-4.0, r);
+
+            float tempFactor = pow(1.0 - smoothstep(inner, outer, r), 0.6);
+            vec3 baseColor = mix(vec3(0.6,0.15,0.02),
+                                 mix(vec3(1.0,0.6,0.15), vec3(1.0,0.95,0.9),
+                                     smoothstep(0.5,1.0,tempFactor)),
+                                 smoothstep(0.0,0.5,tempFactor));
+
+            vec3 velDir = normalize(vec3(-sin(angle), 0.0, cos(angle)));
+            vec3 viewDir = normalize(uCamPos - pos);
+            float dopplerShift = dot(velDir, viewDir);
+            float boost = max(1.0 + dopplerShift*1.8, 0.2);
+            vec3 dopplerTint = mix(vec3(1.0,0.7,0.5), vec3(0.7,0.85,1.0), dopplerShift*0.5+0.5);
+
+            return vec4(baseColor * dopplerTint * boost * 2.5, density * 0.7);
+        }
+
+        vec3 gridBg(vec3 dir) {
+            vec2 uv = vec2(atan(dir.z,dir.x), asin(dir.y)) * 3.5;
+            float g = step(0.97, fract(uv.x*5.0)) + step(0.97, fract(uv.y*5.0));
+            return vec3(0.0, g*0.2, g*0.1);
+        }
+
+        void main() {
+            vec2 uv = vUv;
+            uv.x *= uResolution.x / uResolution.y;
+
+            vec3 ro = uCamPos;
+            vec3 ta = vec3(0.0);
+            vec3 ww = normalize(ta - ro);
+            vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
+            vec3 vv = normalize(cross(uu, ww));
+            vec3 rd = normalize(uv.x*uu + uv.y*vv + 1.7*ww);
+
+            vec3 p = ro;
+            vec3 dir = rd;
+            vec3 diskAccum = vec3(0.0);
+            float accAlpha = 0.0;
+            float b_crit = 2.6 * uRs;
+            bool captured = false;
+
+            const int MAX_STEPS = 100;
+            float stepSize = 0.3;
+
+            for (int i = 0; i < MAX_STEPS; i++) {
+                float r = length(p);
+                if (r < uRs * 1.01) { captured = true; break; }
+                if (r > 150.0) break;
+                if (accAlpha > 0.98) break;
+
+                float force = 1.5 * uRs / (r*r);
+                vec3 toCenter = normalize(-p);
+                dir = normalize(dir + toCenter * force * stepSize);
+
+                if (abs(p.y) < 3.5) {
+                    vec4 ds = sampleDisk(p);
+                    if (ds.a > 0.005) {
+                        float alpha = ds.a * stepSize * 2.0;
+                        diskAccum += ds.rgb * alpha * (1.0 - accAlpha);
+                        accAlpha += alpha * (1.0 - accAlpha);
+                    }
+                }
+
+                stepSize = clamp(r*0.06, 0.06, 1.2);
+                p += dir * stepSize;
+            }
+
+            vec3 col = vec3(0.0);
+            if (!captured && accAlpha < 1.0) {
+                vec3 bg = uShowGrid > 0.5 ? gridBg(dir) + galaxy(dir)*0.3 : galaxy(dir);
+                col = diskAccum + bg * (1.0 - accAlpha);
+            } else {
+                col = diskAccum;
+            }
+
+            // Photon rings
+            vec3 crossP = cross(ro, rd);
+            float b = length(crossP);
+            col += vec3(0.9,0.7,0.4) * exp(-abs(b - b_crit)*1.5) * 0.7;
+            col += vec3(1.0,0.9,0.7) * exp(-abs(b - b_crit*0.96)*6.0) * 0.35;
+            col += vec3(0.8,0.6,0.3) * exp(-abs(b - b_crit*1.02)*12.0) * 0.2;
+            col += vec3(0.4,0.25,0.15) * exp(-b*0.12) * 0.07;
+
+            // Post
+            float lum = dot(col, vec3(0.299,0.587,0.114));
+            col += col * smoothstep(0.8, 2.5, lum) * 0.35;
+            col += (hash2(vUv*uResolution + uTime) - 0.5) * 0.01;
+            col.r *= 1.02; col.b *= 0.97;
+
+            gl_FragColor = vec4(col, 1.0);
+        }
+    `,
+    depthWrite: false
+});
+
+const fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2,2), mainShaderMat);
+fsQuad.frustumCulled = false;
+fsQuad.renderOrder = -999;
+scene.add(fsQuad);
+
+/* ═══════════════════════════════════════════
+   ORBIT PATH RING (subtle)
+   ═══════════════════════════════════════════ */
+const orbitCurve = new THREE.EllipseCurve(0, 0, EARTH_ORBIT_R, EARTH_ORBIT_R, 0, Math.PI*2, false, 0);
+const orbitPts = orbitCurve.getPoints(128);
+const orbitGeo3 = new THREE.BufferGeometry().setFromPoints(
+    orbitPts.map(p => new THREE.Vector3(p.x + SOLAR_CENTER.x, SOLAR_CENTER.y, p.y + SOLAR_CENTER.z))
+);
+const orbitLine = new THREE.Line(orbitGeo3, new THREE.LineBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.06
+}));
+scene.add(orbitLine);
+
+/* ═══════════════════════════════════════════
+   INTERACTION
+   ═══════════════════════════════════════════ */
+addEventListener('keydown', e => {
+    if (e.code === 'KeyG') {
+        showGrid = !showGrid;
+        gridMesh.visible = showGrid;
+        mainShaderMat.uniforms.uShowGrid.value = showGrid ? 1.0 : 0.0;
+    }
+});
+
+/* ═══════════════════════════════════════════
+   MAIN LOOP
+   ═══════════════════════════════════════════ */
+const clock = new THREE.Clock();
+const uiDist = document.getElementById('ui-dist');
+
+function animate() {
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+    controls.update();
+
+    // Shader uniforms
+    mainShaderMat.uniforms.uTime.value = t;
+    mainShaderMat.uniforms.uCamPos.value.copy(camera.position);
+    mainShaderMat.uniforms.uResolution.value.set(innerWidth, innerHeight);
+
+    // ── Animate solar system ──
+    // Earth orbits Sun
+    const earthAngle = t * 0.08;
+    const earthX = SOLAR_CENTER.x + Math.cos(earthAngle) * EARTH_ORBIT_R;
+    const earthZ = SOLAR_CENTER.z + Math.sin(earthAngle) * EARTH_ORBIT_R;
+    earthMesh.position.set(earthX, SOLAR_CENTER.y, earthZ);
+    earthMesh.rotation.y = t * 0.3; // Spin
+    atmosMesh.position.copy(earthMesh.position);
+
+    // Moon orbits Earth
+    const moonAngle = t * 0.5;
+    moonMesh.position.set(
+        earthX + Math.cos(moonAngle) * MOON_ORBIT_R,
+        SOLAR_CENTER.y + Math.sin(moonAngle * 0.3) * 0.4,
+        earthZ + Math.sin(moonAngle) * MOON_ORBIT_R
+    );
+    moonMesh.rotation.y = t * 0.15;
+
+    // Sun slow pulse
+    const pulse = 1.0 + Math.sin(t * 0.8) * 0.03;
+    sunGlow.scale.set(40*pulse, 40*pulse, 1);
+
+    // UI
+    const distBH = camera.position.length();
+    const distRs = (distBH / RS).toFixed(1);
+    uiDist.textContent = distRs + ' Rs';
+
+    renderer.render(scene, camera);
+}
+
+addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    mainShaderMat.uniforms.uResolution.value.set(innerWidth, innerHeight);
+});
+
+animate();
+})();
+</script>
+</body>
+</html>
